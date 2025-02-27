@@ -27,7 +27,7 @@
 
 #include "retained.h"
 
-#define MAX_TRACKERS 256
+#define MAX_TRACKERS 31 // Not 32 as header (TYPE_REGISTER, 31) is the same as HEADER_SKIP
 #define DETECTION_THRESHOLD 16
 
 // TODO: move to esb

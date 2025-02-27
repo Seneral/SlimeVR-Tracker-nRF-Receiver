@@ -25,6 +25,8 @@
 
 #include <esb.h>
 
+extern uint64_t rx_timestamp;
+
 void event_handler(struct esb_evt const* event);
 int clocks_start(void);
 int esb_initialize(bool);

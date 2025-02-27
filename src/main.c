@@ -59,6 +59,7 @@ int main(void) {
 			esb_pair();  // this will not return
 			break;
 		case 2:
+			stored_trackers = 0;
 			sys_write(STORED_TRACKERS, NULL, &stored_trackers, sizeof(stored_trackers));
 			LOG_INF("NVS Reset");
 			LOG_INF("Pairing requested");

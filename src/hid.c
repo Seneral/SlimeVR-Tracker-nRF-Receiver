@@ -28,15 +28,21 @@
 
 static struct k_work report_send;
 
-static struct tracker_report {
-	uint8_t data[16];
-} __packed report = {
-	.data = {0}
-};;
+struct tracker_report {
+	uint8_t data[15];
+} __packed;
 
-uint8_t reports[256*sizeof(report)];
-uint8_t report_count = 0;
-uint8_t report_sent = 0;
+// Ringbuffer of reports
+// Need to store potentially multiple packet types by all trackers 
+// REPORTS_LENGTH should be divisible by 4 to allow clean wrapping when sending 4 reports at once
+#define REPORTS_LENGTH (MAX_TRACKERS*4)
+#define REPORT_SIZE sizeof(struct tracker_report)
+#define MAX_REPORTS (REPORT_SIZE-4-1) // 4 as currently sending, 1 more for HEADER_SIZE of sending
+#define HEADER_SIZE 4
+uint8_t report_ringbuffer[HEADER_SIZE + REPORT_SIZE * REPORTS_LENGTH];
+uint8_t *reports = report_ringbuffer+HEADER_SIZE;
+uint32_t report_count = 0;
+uint32_t report_sent = 0;
 
 static bool configured;
 static const struct device *hdev;
@@ -47,8 +53,8 @@ static ATOMIC_DEFINE(hid_ep_in_busy, 1);
 
 LOG_MODULE_REGISTER(hid_event, LOG_LEVEL_INF);
 
-static void report_event_handler(struct k_timer *dummy);
-static K_TIMER_DEFINE(event_timer, report_event_handler, NULL);
+static void send_report_timer_1ms(struct k_timer *dummy);
+static K_TIMER_DEFINE(event_timer, send_report_timer_1ms, NULL);
 
 static const uint8_t hid_report_desc[] = {
 	HID_USAGE_PAGE(HID_USAGE_GEN_DESKTOP),
@@ -60,46 +66,60 @@ static const uint8_t hid_report_desc[] = {
 		HID_INPUT(0x02),
 	HID_END_COLLECTION,
 };
+		/* HID_REPORT_SIZE(32),
+		HID_REPORT_COUNT(1),
+		HID_USAGE(HID_USAGE_GEN_DESKTOP_UNDEFINED),
+		HID_REPORT_SIZE(120),
+		HID_REPORT_COUNT(4), */
 
-uint16_t sent_device_addr = 0;
+// Report 1: 4 Bytes HID Packet Header, 4 IMU Packets (15 Byte each), total 64 Bytes
+//     HID Header:    |timestamp_last   |RESV             |
+//     Data Packet:   |typ|id  |b1      |b2      |b3      |b4      |b5      |b6      |b7      |b8      |b9      |b10     |b11     |b12     |b13     |b14     |
+//     IMU Packet:    |111|id  |q0               |q1               |q2               |a0               |a1               |a2               |timestamp_imu    |
+// Report 2: 4 Bytes HID Packet Header, 12 Status Packets (5 Byte each), total 64 Bytes
+//     HID Header:    |timestamp_last   |RESV             |
+//     Status Packet: |000|id  |batt    |batt_v  |temp    |rssi    |
+
 bool usb_enabled = false;
 int64_t last_registration_sent = 0;
-
-static void packet_device_addr(uint8_t *report, uint16_t id) // associate id and tracker address
-{
-	report[0] = 255; // receiver packet 0
-	report[1] = id;
-	memcpy(&report[2], &stored_tracker_addr[id], 6);
-	memset(&report[8], 0, 8); // last 8 bytes unused for now
-}
+uint64_t tx_timestamp = 0;
 
 static void send_report(struct k_work *work)
 {
 	if (!usb_enabled) return;
 	if (!stored_trackers) return;
-	if (report_count == 0 && k_uptime_get() - 100 < last_registration_sent) return; // send registrations only every 100ms
+	if (report_count == 0) return;
 	int ret, wrote;
 
-	last_registration_sent = k_uptime_get();
-
 	if (!atomic_test_and_set_bit(hid_ep_in_busy, HID_EP_BUSY_FLAG)) {
-		// TODO: this really sucks, how can i send as much or as little as i want instead??
-//		for (int i = report_count; i < 4; i++) memcpy(&reports[sizeof(report) * (report_sent+i)], &reports[sizeof(report) * report_sent], sizeof(report)); // just duplicate first entry a bunch, this will definitely cause problems
-		// cycle through devices and send associated address for server to register
-		for (int i = report_count; i < 4; i++) {
-			packet_device_addr(&reports[sizeof(report) * (report_sent + i)], sent_device_addr);
-			sent_device_addr++;
-			sent_device_addr %= stored_trackers;
+
+		// Write 4-Byte header before first report 
+		uint8_t *header = &reports[report_sent*REPORT_SIZE - HEADER_SIZE];
+		// Timestamp of LAST HID packet sent, for timesync
+		((uint16_t*)header)[0] = tx_timestamp & 0xFFFF;
+		// Remaining two header bytes are unused
+
+		// Submit header and 4 reports for HID to send
+		ret = hid_int_ep_write(hdev, header, HEADER_SIZE+4*REPORT_SIZE, &wrote);
+
+		for (int i = 0; i < 4; i++)
+		{ // Invalidate packets after sending
+			reports[(report_sent+i)*REPORT_SIZE+0] = 255;
+			reports[(report_sent+i)*REPORT_SIZE+1] = 255;
 		}
-//		ret = hid_int_ep_write(hdev, &reports, sizeof(report) * report_count, &wrote);
-		ret = hid_int_ep_write(hdev, &reports[sizeof(report) * report_sent], sizeof(report) * 4, &wrote);
-		if (report_count > 4) {
-			LOG_INF("Dropped %u report%s", report_count - 4, report_count - 4 > 1 ? "s" : "");
+
+		// Update report ringbuffer values
+		report_count = report_count > 4? report_count-4 : 0;
+		report_sent += 4;
+		if ((report_sent + 4)*REPORT_SIZE > REPORTS_LENGTH)
+			report_sent = 0; // Wrap in ring buffer
+		//assert(report_sent%4 == 0);
+		if (report_sent%4 != 0)
+		{
+			LOG_ERR("report_sent %d not aligned anymore!", report_sent);
+			report_sent += 4-(report_sent%4);
 		}
-		report_sent += report_count;
-		report_sent += 3; // this is a hack to make sure the ep isnt reading the same bits as trackers write to
-		if (report_sent > 128) report_sent = 0; // an attempt to make ringbuffer so the ep isnt reading the same bits as trackers write to
-		report_count = 0;
+
 		if (ret != 0) {
 			/*
 			 * Do nothing and wait until host has reset the device
@@ -117,6 +137,7 @@ static void send_report(struct k_work *work)
 static void int_in_ready_cb(const struct device *dev)
 {
 	ARG_UNUSED(dev);
+	tx_timestamp = k_ticks_to_us_floor64(k_uptime_ticks());
 	if (!atomic_test_and_clear_bit(hid_ep_in_busy, HID_EP_BUSY_FLAG)) {
 		LOG_WRN("IN endpoint callback without preceding buffer write");
 	}
@@ -124,16 +145,16 @@ static void int_in_ready_cb(const struct device *dev)
 
 /*
  * On Idle callback is available here as an example even if actual use is
- * very limited. In contrast to report_event_handler(),
+ * very limited. In contrast to send_report_timer_1ms(),
  * report value is not incremented here.
  */
 static void on_idle_cb(const struct device *dev, uint16_t report_id)
 {
-	LOG_DBG("On idle callback");
-	k_work_submit(&report_send);
+	if (report_count >= 4)
+		k_work_submit(&report_send);
 }
 
-static void report_event_handler(struct k_timer *dummy)
+static void send_report_timer_1ms(struct k_timer *dummy)
 {
 	if (usb_enabled)
 		k_work_submit(&report_send);
@@ -203,35 +224,36 @@ void usb_init_thread(void)
 	k_msleep(1000); // Wait before enabling USB // TODO: why does it need to wait so long
 	usb_enable(status_cb);
 	k_work_init(&report_send, send_report);
+	memset(reports, 0, sizeof(reports));
+	for (int i = 0; i < REPORTS_LENGTH; i++)
+	{ // Invalidate packet
+		reports[i*REPORT_SIZE+0] = 255;
+		reports[i*REPORT_SIZE+1] = 255;
+	}
 	usb_enabled = true;
 }
 
 K_THREAD_DEFINE(usb_init_thread_id, 256, usb_init_thread, NULL, NULL, NULL, 6, 0, 0);
 
-//|b0      |b1      |b2      |b3      |b4      |b5      |b6      |b7      |b8      |b9      |b10     |b11     |b12     |b13     |b14     |b15     |
-//|type    |id      |packet data                                                                                                                  |
-//|0       |id      |proto   |batt    |batt_v  |temp    |brd_id  |mcu_id  |imu_id  |mag_id  |fw_date          |major   |minor   |patch   |rssi    |
-//|1       |id      |q0               |q1               |q2               |q3               |a0               |a1               |a2               |
-//|2       |id      |batt    |batt_v  |temp    |q_buf                              |a0               |a1               |a2               |rssi    |
-//|3	   |id      |svr_stat|status  |resv                                                                                              |rssi    |
-//|255     |id      |addr                                                 |resv                                                                   |
-
-void hid_write_packet_n(uint8_t *data, uint8_t rssi)
+void hid_queue_tracker_report(uint8_t *data, uint8_t size)
 {
-	memcpy(&report.data, data, 16); // all data can be passed through
-	if (data[0] != 1) // packet 1 is full precision quat and accel, no room for rssi
-		report.data[15]=rssi;
-	// TODO: this sucks
-	for (int i = 0; i < report_count; i++) // replace existing entry instead
-	{
-		if (reports[sizeof(report) * (report_sent + i) + 1] == report.data[1])
-		{
-			memcpy(&reports[sizeof(report) * (report_sent + i)], &report, sizeof(report));
+	//assert(size <= REPORT_SIZE);
+	for (int i = 0; i < report_count; i++)
+	{ // Replace any existing queued report with same header (same type from same tracker)
+		uint32_t index = ((report_sent+i)%REPORTS_LENGTH)*REPORT_SIZE;
+		if (reports[index] == data[0])
+		{ // Same packet type, same tracker, overwrite
+			memcpy(&reports[index], data, size);
+			// Zeroe remaining bytes (if any)
+			memset(&reports[index+size], 0, REPORT_SIZE-size);
 			break;
 		}
 	}
-	if (report_count > 100) // overflow
-		return;
-	memcpy(&reports[sizeof(report) * (report_sent + report_count)], &report, sizeof(report));
+	if (report_count >= MAX_REPORTS) // overflow
+		return; // Overflow - minus 5 to keep away from currently sending reports
+	uint32_t index = ((report_sent+report_count)%REPORTS_LENGTH)*REPORT_SIZE;
+	memcpy(&reports[index], data, size);
+	// Zeroe remaining bytes (if any)
+	memset(&reports[index+size], 0, REPORT_SIZE-size);
 	report_count++;
 }

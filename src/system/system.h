@@ -10,7 +10,7 @@
 #define RBT_CNT_ID 2
 #define STORED_ADDR_0 3
 // 0-15 -> id 3-18
-// 0-255 -> id 3-258
+// 0-31 -> id 3-34
 
 uint8_t reboot_counter_read(void);
 void reboot_counter_write(uint8_t reboot_counter);

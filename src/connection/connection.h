@@ -20,11 +20,32 @@
 	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 	THE SOFTWARE.
 */
-#ifndef SLIMENRF_HID
-#define SLIMENRF_HID
+#ifndef SLIMENRF_CONNECTION
+#define SLIMENRF_CONNECTION
 
 #include <stdint.h>
 
-void hid_queue_tracker_report(uint8_t *data, uint8_t size);
+enum PACKET_HEADER_TYPE
+{
+	HEADER_PAIR = 0b00000000, // blocks type 0b000 as tracker_id 0 does exist
+	TYPE_INFO_STATUS = 0b001,
+	TYPE_IMU_CAYLEY = 0b010,
+	// Remaining types are for future uses / revisions
+	TYPE_GENERIC_HID = 0b100, // First byte is used to specify exact HID format (tbd)
+	TYPE_REGISTER = 0b111,
+	HEADER_SKIP = 0b11111111,
+};
+
+enum PACKET_RESERVED_SIZES
+{
+	SIZE_MAX_NORMAL = 15,
+	SIZE_TIMESTAMPED = 16,
+	SIZE_TIMESTAMPED_STATUS = 19,
+	// All packets of size 15 or below are forwarded as (1B header, 14B Data & 0-Padding)
+	// Packets of SIZE_TIMESTAMPED are forwarded as (1B header, 12B Data & 0-Padding, 2B Timestamp)
+	// Packets of SIZE_TIMESTAMPED_STATUS are the same except they also update a 3-byte status
+};
+
+void connection_handle_packet(uint8_t *data, uint8_t size, uint8_t rssi);
 
 #endif
