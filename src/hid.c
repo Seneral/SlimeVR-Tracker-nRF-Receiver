@@ -81,14 +81,20 @@ static const uint8_t hid_report_desc[] = {
 //     Status Packet: |000|id  |batt    |batt_v  |temp    |rssi    |
 
 bool usb_enabled = false;
-int64_t last_registration_sent = 0;
-uint64_t tx_timestamp = 0;
+int64_t last_status_time_us = 0;
+uint64_t last_tx_time_us = 0;
 
 static void send_report(struct k_work *work)
 {
 	if (!usb_enabled) return;
 	if (!stored_trackers) return;
-	if (report_count == 0) return;
+	// Send one all 10ms even if empty for timesync
+	uint32_t t_now = k_ticks_to_us_floor64(k_uptime_ticks());
+	bool need_sync = t_now - last_tx_time_us > 1500; // Every second frame (2ms)
+	// TODO: Implement status and info HID reports
+	bool want_status = false; // t_now - last_status_time_us > 100000; // Max every 100ms, half of status
+	bool want_info = false; // t_now - last_info_time_us > 1000000; // Max every 1s
+	if (report_count == 0 && !need_sync && !want_status && !want_info) return;
 	int ret, wrote;
 
 	if (!atomic_test_and_set_bit(hid_ep_in_busy, HID_EP_BUSY_FLAG)) {
@@ -96,7 +102,7 @@ static void send_report(struct k_work *work)
 		// Write 4-Byte header before first report 
 		uint8_t *header = &reports[report_sent*REPORT_SIZE - HEADER_SIZE];
 		// Timestamp of LAST HID packet sent, for timesync
-		((uint16_t*)header)[0] = tx_timestamp & 0xFFFF;
+		((uint32_t*)header)[0] = last_tx_time_us & 0xFFFFFFFF;
 		// Remaining two header bytes are unused
 
 		// Submit header and 4 reports for HID to send
@@ -137,7 +143,7 @@ static void send_report(struct k_work *work)
 static void int_in_ready_cb(const struct device *dev)
 {
 	ARG_UNUSED(dev);
-	tx_timestamp = k_ticks_to_us_floor64(k_uptime_ticks());
+	last_tx_time_us = k_ticks_to_us_floor64(k_uptime_ticks());
 	if (!atomic_test_and_clear_bit(hid_ep_in_busy, HID_EP_BUSY_FLAG)) {
 		LOG_WRN("IN endpoint callback without preceding buffer write");
 	}
