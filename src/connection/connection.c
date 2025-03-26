@@ -77,7 +77,7 @@ void connection_handle_packet(uint8_t *data, uint8_t size, uint8_t rssi)
 	{ // Update into and status and then return
 		if (size != 14)
 		{
-			LOG_ERR("Received info+status packet of size %d (!= 14)!", size);
+			LOG_ERR("Received info+status packet of size %d (!= 14) from tracker %d!", size, tracker_id);
 			return;
 		}
 		memcpy(tracker_infos[tracker_id].data, data+1, 10);
@@ -135,8 +135,8 @@ void connection_handle_packet(uint8_t *data, uint8_t size, uint8_t rssi)
 		// Determine time of this data packet using remote timestamp
 		uint64_t ts_imu = rebase_timestamp_reference(timesync, timestamp_imu, 1<<14, rx_timestamp-4000);
 		uint64_t packet_time_us = get_time_synced(timesync, ts_imu);
-		LOG_DBG("Received IMU sample with %lldus latency! Raw timestamps are %u IMU %u last",
-			(int64_t)rx_timestamp-(int64_t)packet_time_us, timestamp_imu, timestamp_last_packet);
+		LOG_DBG("Received IMU sample from tracker %d with %lldus latency! Raw timestamps are %u IMU %u last",
+			tracker_id, (int64_t)rx_timestamp-(int64_t)packet_time_us, timestamp_imu, timestamp_last_packet);
 
 		// Write mapped timestamp after the 12 Bytes of data
 		*(uint16_t*)&data[13] = packet_time_us & 0xFFFF;
@@ -167,7 +167,7 @@ K_THREAD_DEFINE(connection_packet_filter_thread_id, 1024, connection_packet_filt
 static void connection_packet_filter_thread(void)
 {
 	memset(discovered_trackers, 0, sizeof(discovered_trackers));
-	int register_index = 0;
+	int register_index = -1;
 	while (true)
 	{ // reset count if its not above threshold
 		k_msleep(1000);
@@ -188,11 +188,12 @@ static void connection_packet_filter_thread(void)
 					hid_queue_tracker_report(report_register, sizeof(report_register));
 					register_index = i;
 					sent_register = true;
+					LOG_DBG("Sending register packet for non-connected tracker %d!", i);
 				}
 			}
 		}
 
 		if (!sent_register)
-			register_index = 0;
+			register_index = -1;
 	}
 }

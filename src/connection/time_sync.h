@@ -40,11 +40,11 @@ static inline void init_time_sync(time_sync_t *time)
 	time->last_timestep = 0;
 	time->last_timestamp = 0;
 	time->factor = 1.0f; // Includes conversion ratio and drift
-	time->correction_up = 0.1f;
-	time->correction_down = 0.2f;
+	time->correction_up = 0.02f;
+	time->correction_down = 0.002f;
 	time->const_offset_us = 0;
 	time->outlier_min = 1000; // More than 100us latency is bad
-	time->outlier_max = 500; // More than 100us latency is bad
+	time->outlier_max = 1000; // More than 100us latency is bad
 	time->outlier_drift = 500; // For long periods, additionally accept drift of X us per second
 	time->init_period = 1; // Don't allow factor to be adjusted in init period (it's 1:1)
 	time->grace_period = 10;

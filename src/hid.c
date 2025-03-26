@@ -115,15 +115,16 @@ static void send_report(struct k_work *work)
 		}
 
 		// Update report ringbuffer values
-		report_count = report_count > 4? report_count-4 : 0;
-		report_sent += 4;
-		if ((report_sent + 4)*REPORT_SIZE > REPORTS_LENGTH)
-			report_sent = 0; // Wrap in ring buffer
-		//assert(report_sent%4 == 0);
-		if (report_sent%4 != 0)
+		if (report_count <= 4)
 		{
-			LOG_ERR("report_sent %d not aligned anymore!", report_sent);
-			report_sent += 4-(report_sent%4);
+			report_count = report_sent = 0;
+		}
+		else
+		{
+			report_count -= 4;
+			report_sent += 4;
+			if ((report_sent + 4)*REPORT_SIZE > REPORTS_LENGTH)
+				report_sent = 0; // Wrap in ring buffer
 		}
 
 		if (ret != 0) {
@@ -147,6 +148,9 @@ static void int_in_ready_cb(const struct device *dev)
 	if (!atomic_test_and_clear_bit(hid_ep_in_busy, HID_EP_BUSY_FLAG)) {
 		LOG_WRN("IN endpoint callback without preceding buffer write");
 	}
+	// Write already if we have 4+ reports waiting to ensure we don't miss the deadline - send_report_timer_1ms might miss it
+	if (report_count >= 4)
+		k_work_submit(&report_send);
 }
 
 /*
@@ -244,7 +248,10 @@ K_THREAD_DEFINE(usb_init_thread_id, 256, usb_init_thread, NULL, NULL, NULL, 6, 0
 void hid_queue_tracker_report(uint8_t *data, uint8_t size)
 {
 	//assert(size <= REPORT_SIZE);
-	for (int i = 0; i < report_count; i++)
+	//if (report_count > 8)
+	//{ // If queue is well-utilised, drop duplicate packets
+	// TODO: If there's already two of the same in there, this will mess it up
+	/* for (int i = 0; i < report_count; i++)
 	{ // Replace any existing queued report with same header (same type from same tracker)
 		uint32_t index = ((report_sent+i)%REPORTS_LENGTH)*REPORT_SIZE;
 		if (reports[index] == data[0])
@@ -252,14 +259,16 @@ void hid_queue_tracker_report(uint8_t *data, uint8_t size)
 			memcpy(&reports[index], data, size);
 			// Zeroe remaining bytes (if any)
 			memset(&reports[index+size], 0, REPORT_SIZE-size);
-			break;
+			return;
 		}
-	}
+	} */
 	if (report_count >= MAX_REPORTS) // overflow
 		return; // Overflow - minus 5 to keep away from currently sending reports
 	uint32_t index = ((report_sent+report_count)%REPORTS_LENGTH)*REPORT_SIZE;
 	memcpy(&reports[index], data, size);
 	// Zeroe remaining bytes (if any)
 	memset(&reports[index+size], 0, REPORT_SIZE-size);
+	//if (size == 15)
+	//	LOG_INF("Writing report %d + %d with timestamp %d", report_sent, report_count, *(uint16_t*)(data+13));
 	report_count++;
 }

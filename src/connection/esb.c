@@ -84,7 +84,7 @@ void event_handler(struct esb_evt const *event)
 					//tx_payload_pair.data[1] = 0; // Invalidate pairing packet
 					// Note that multiple trackers trying to pair at once could conflict
 					// TODO: Move processing from pairing thread to here to fix multiple trackers pairing at once conflicting
-					esb_write_payload(&tx_payload_pair);
+					//esb_write_payload(&tx_payload_pair);
 				}
 			}
 			else
@@ -278,7 +278,7 @@ void esb_pair(void)
 		{
 			if (found_addr != 0 && stored_tracker_addr[i] == found_addr)
 			{
-				//LOG_INF("Found device linked to id %d with address %012llX", i, found_addr);
+				LOG_INF("Found device linked to id %d with address %012llX", i, found_addr);
 				send_tracker_id = i;
 			}
 		}
