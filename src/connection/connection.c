@@ -99,6 +99,10 @@ void connection_handle_packet(uint8_t *data, uint8_t size, uint8_t rssi)
 	if (type == TYPE_INFO_STATUS)
 	{ // Parsed already
 		last_tracker_rx[tracker_id] = rx_timestamp;
+		// TODO: Somehow send info/status to host
+		// Forward final packet data to server through HID
+		data[size] = rssi; // Technically out of bounds, but size of Info+Status is < ESB max payload
+		hid_queue_tracker_report(data, size+1);
 		return;
 	}
 

@@ -102,7 +102,7 @@ static void send_report(struct k_work *work)
 		// Write 4-Byte header before first report 
 		uint8_t *header = &reports[report_sent*REPORT_SIZE - HEADER_SIZE];
 		// Timestamp of LAST HID packet sent, for timesync
-		((uint32_t*)header)[0] = last_tx_time_us & 0xFFFFFFFF;
+		((uint16_t*)header)[0] = (last_tx_time_us >> 2) & 0xFFFF;
 		// Remaining two header bytes are unused
 
 		// Submit header and 4 reports for HID to send
